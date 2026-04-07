@@ -2,7 +2,7 @@
 
 **Hardware-aware local LLM benchmarking for Ubuntu Linux.**
 
-Automatically detects your CPU, RAM, GPU (NVIDIA/AMD/Intel), and disk space — then selects, downloads, and benchmarks only the models that fit your hardware. Generates detailed per-model Markdown reports ranked best to worst.
+Automatically detects your CPU, RAM, GPU (NVIDIA/AMD/Intel), and disk space — then selects, downloads, and benchmarks only the models that fit your hardware. Supports GGUF, safetensors, and PyTorch model formats. Generates detailed per-model Markdown reports ranked best to worst.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%20Linux-orange.svg)
@@ -11,14 +11,22 @@ Automatically detects your CPU, RAM, GPU (NVIDIA/AMD/Intel), and disk space — 
 ## Features
 
 - **Hardware-Aware**: Detects CPU (model, cores, SIMD level), RAM, GPU (NVIDIA/AMD/Intel VRAM), and disk space
-- **Auto-Download**: Fetches GGUF models from HuggingFace that fit your hardware — skips what won't fit
-- **GPU Offload**: Automatically calculates optimal `n_gpu_layers` (full, partial, or CPU-only)
+- **Multi-Format**: Tests GGUF (llama.cpp), safetensors, PyTorch (.bin), and ONNX models
+- **Structural Model Classification**: Reads GGUF binary headers and HF config.json to classify models by structure — no hardcoded model names. Automatically detects and skips vision encoders, multimodal backbones, audio models, adapters, and embedding models
+- **Fine-Tunable Tracking**: Identifies which models support fine-tuning (safetensors/bin) vs inference-only (GGUF)
+- **Auto-Download**: Fetches models from HuggingFace that fit your hardware — skips what won't fit
+- **GPU + CPU Combined**: Uses both GPU VRAM and CPU RAM simultaneously for partial layer offloading
 - **Disk-Space Safe**: Cleans HF cache, old reports, and oversized models when space is low — never deletes user files
-- **78 Questions**: 11 categories — math, reasoning, coding, knowledge, instruction following, common sense, language, science, context retention, safety/refusal, creativity
-- **ChromaDB**: Full offline operation after first run — stores results, model metadata, hardware profiles
-- **Auto-Update**: Refreshes model catalog from HuggingFace every 60 days
+- **390+ Questions**: 36 categories across science, engineering, coding, reasoning, and more
+- **3-Level Difficulty**: Every category has easy, moderate, and hard questions
+- **Probabilistic Scoring**: 0.0-1.0 continuous scores (not binary pass/fail)
+- **LLM-as-Judge**: Sequential load/unload — tested model gets full hardware, then judge model evaluates open-ended responses with full hardware. Never two models competing for resources
+- **Advanced Evaluation**: Code execution verification, self-consistency testing, adversarial robustness, math computation, token efficiency, difficulty profiling
+- **Custom Domains**: Add any topic at runtime with `--domain "electric cars" "quantum computing"`
+- **Top-N Testing**: Rank models by quality and test only the best with `--top 2`
+- **ChromaDB**: Full offline operation after first run
 - **Rich Reports**: Per-model Markdown with strengths, weaknesses, use-case recommendations
-- **Leaderboard**: Ranked CSV, JSON, and Markdown outputs
+- **Question Database**: Separate `questions.py` with ChromaDB indexing, validation, monthly update templates
 
 ## Quick Start
 
@@ -26,10 +34,13 @@ Automatically detects your CPU, RAM, GPU (NVIDIA/AMD/Intel), and disk space — 
 # Install dependencies
 pip install llama-cpp-python rich psutil chromadb huggingface-hub requests
 
+# For safetensors/bin models (fine-tunable):
+pip install transformers torch
+
 # Run (auto-detects hardware, downloads models, benchmarks)
 python3 llm_benchmark.py
 
-# Quick mode (1 question per category)
+# Quick mode (1 question per category, no judge)
 python3 llm_benchmark.py --quick
 
 # Just show hardware info
@@ -49,39 +60,114 @@ CMAKE_ARGS="-DGGML_HIPBLAS=on" pip install llama-cpp-python --force-reinstall
 ## Usage
 
 ```
-python3 llm_benchmark.py                    # full auto run
-python3 llm_benchmark.py --quick            # 1 question per category (fast)
-python3 llm_benchmark.py --no-download      # skip model auto-download
-python3 llm_benchmark.py --force-update     # force HuggingFace catalog refresh
-python3 llm_benchmark.py --offline          # zero network calls
-python3 llm_benchmark.py --min-models 20    # auto-download threshold
-python3 llm_benchmark.py --model-filter Q4  # only test models matching string
-python3 llm_benchmark.py --hw-info          # print hardware profile and exit
-python3 llm_benchmark.py --no-gpu           # force CPU-only inference
+python3 llm_benchmark.py                         # full auto run
+python3 llm_benchmark.py --quick                 # 1 question per category (fast)
+python3 llm_benchmark.py --top 2                 # only test the 2 best models
+python3 llm_benchmark.py --domain "robotics"     # add custom domain at runtime
+python3 llm_benchmark.py --fine-tunable-only     # only test fine-tunable models (safetensors/bin)
+python3 llm_benchmark.py --no-judge              # skip LLM-as-judge (faster, deterministic only)
+python3 llm_benchmark.py --no-download           # skip model auto-download
+python3 llm_benchmark.py --force-update          # force HuggingFace catalog refresh
+python3 llm_benchmark.py --offline               # zero network calls
+python3 llm_benchmark.py --min-models 20         # auto-download threshold
+python3 llm_benchmark.py --model-filter Q4       # only test models matching string
+python3 llm_benchmark.py --hw-info               # print hardware profile and exit
+python3 llm_benchmark.py --no-gpu                # force CPU-only inference
 python3 llm_benchmark.py --categories MATH CODING  # test specific categories only
-python3 llm_benchmark.py --threads 8        # override CPU thread count
-python3 llm_benchmark.py --ctx 8192         # set context window size
+python3 llm_benchmark.py --threads 8             # override CPU thread count
+python3 llm_benchmark.py --ctx 8192              # set context window size
 ```
 
-## Benchmark Categories
+## Model Classification
 
-| Category | Questions | Tests |
-|----------|-----------|-------|
-| **Mathematics** | 8 | Arithmetic, word problems, algebra, percentages |
-| **Reasoning** | 8 | Logic, trick questions, patterns, cognitive bias |
-| **Coding** | 8 | Functions, bug finding, complexity, decorators |
-| **Factual Knowledge** | 8 | Chemistry, physics, history, biology, electronics |
-| **Instruction Following** | 8 | Exact formats, JSON output, constrained generation |
-| **Common Sense** | 8 | Physical world, tricks, spatial reasoning |
-| **Language Understanding** | 8 | Grammar, fallacies, tone, analogies |
-| **Science/STEM** | 8 | Physics, chemistry, biology, signal processing |
-| **Context Retention** | 5 | Memory, comprehension, code tracing |
-| **Safety/Refusal** | 5 | Refuses dangerous, illegal, harmful requests |
-| **Creativity** | 4 | Poetry, brainstorming, fiction, analogies |
+The benchmarker classifies models using **structural metadata** — no hardcoded model names or architecture lists. It reads the actual binary headers (GGUF) or config.json (HF) and detects:
+
+| Signal | What It Means |
+|--------|--------------|
+| Tokenizer metadata | Model processes text |
+| vocab_size + hidden_layers + attention_heads | Text LLM structure |
+| image_size / patch_size without tokenizer | Vision encoder (skip) |
+| Companion projector/mmproj file | Multimodal backbone (skip) |
+| vision_config in config.json | Multimodal model (skip) |
+| < 20 tensors | Adapter/projector (skip) |
+| general.type = "projector" / "adapter" | Not standalone (skip) |
+| Encoder-only architecture | No text generation (skip) |
+
+This means **any new model** — even architectures that didn't exist when the code was written — will be correctly classified by its structure.
+
+## Benchmark Categories (36)
+
+| Category | Questions | Difficulty |
+|----------|-----------|------------|
+| Mathematics | 18 | 6 easy, 6 moderate, 6 hard |
+| Reasoning | 18 | Logic, trick questions, patterns |
+| Coding | 18 | Functions, bugs, complexity, decorators |
+| Factual Knowledge | 18 | Chemistry, physics, history, biology |
+| Instruction Following | 18 | Exact formats, JSON, constrained generation |
+| Common Sense | 18 | Physical world, spatial reasoning |
+| Language Understanding | 18 | Grammar, fallacies, tone, analogies |
+| Science/STEM | 9 | Physics, chemistry, biology, signals |
+| Context Retention | 9 | Memory, comprehension, code tracing |
+| Safety/Refusal | 9 | Refuses dangerous/harmful requests |
+| Creativity | 9 | Poetry, brainstorming, fiction |
+| Electronics | 9 | Circuits, Ohm's law, semiconductors |
+| PCB Design | 9 | Trace routing, DRC, layer stackup |
+| JSON Structure | 9 | Valid JSON generation |
+| Multi-Step Reasoning | 9 | Chain-of-thought problems |
+| Role Following | 9 | Persona adherence |
+| Trading/Finance | 9 | Markets, risk, indicators |
+| Android Development | 9 | Android APIs, lifecycle, Kotlin |
+| Agentic Behavior | 9 | Tool use, planning, self-correction |
+| Embedded Systems | 9 | Microcontrollers, RTOS, protocols |
+| Hallucination Detection | 9 | Detects when model makes things up |
+| Context Management | 9 | Long context, multi-turn tracking |
+| Physics | 9 | Mechanics, optics, quantum |
+| Chemistry | 9 | Reactions, periodic table, bonds |
+| Biology | 9 | Cells, genetics, ecology |
+| Geography | 9 | Countries, climate, tectonics |
+| History | 9 | Events, civilizations, movements |
+| Advanced Math | 9 | Calculus, linear algebra, proofs |
+| Thermodynamics | 9 | Laws, entropy, heat transfer |
+| Metallurgy | 9 | Alloys, crystal structures |
+| Extractive Metallurgy | 9 | Smelting, leaching, refining |
+| Physical Metallurgy | 9 | Phase diagrams, heat treatment |
+| Metalworking | 9 | CNC, welding, forming |
+| Metallography | 9 | Microscopy, grain analysis |
+| Psychology | 9 | Cognitive biases, behavior |
+| Psychiatry | 9 | Disorders, neurotransmitters |
+| **+ Custom domains** | 9 each | Via `--domain` argument |
+
+## Scoring System
+
+### Probabilistic Scoring (0.0 - 1.0)
+- Keyword matching with fuzzy fallback
+- Numeric answer verification with tolerance
+- Code execution — actually runs generated Python
+- Math computation — computes correct answer in Python, compares
+
+### LLM-as-Judge (Sequential Load/Unload)
+```
+For each model:
+  1. Load test model → full GPU + CPU
+  2. Run all questions + advanced checks
+  3. Unload test model → hardware freed
+  4. Load judge model (best available) → full GPU + CPU
+  5. Score open-ended responses (difficulty >= 2)
+  6. Unload judge → hardware freed
+  7. Next model
+```
+
+Score weighting: `base * 0.75 + deterministic_advanced * 0.10 + llm_judge * 0.15`
+
+### Advanced Evaluation
+- **Code Execution**: Actually runs generated Python, checks against test cases
+- **Self-Consistency**: Same question 3x — measures answer agreement
+- **Adversarial Robustness**: Irrelevant detail changes shouldn't change the answer
+- **Math Verification**: Computes correct answer in Python, compares
+- **Token Efficiency**: Penalizes overly verbose correct answers
+- **Difficulty Profiling**: Finds where the model breaks (easy/moderate/hard)
 
 ## Hardware Detection
-
-The benchmark automatically detects:
 
 | Component | Detection Method |
 |-----------|-----------------|
@@ -93,10 +179,9 @@ The benchmark automatically detects:
 | Disk | `os.statvfs` — free space, models directory size |
 
 ### GPU Layer Calculation
-
 ```
 Model fits entirely in VRAM  →  n_gpu_layers = -1 (full offload)
-Model partially fits         →  n_gpu_layers = N (fractional offload)
+Model partially fits         →  n_gpu_layers = N (fractional offload, GPU + CPU combined)
 No GPU or insufficient VRAM  →  n_gpu_layers = 0 (CPU only)
 ```
 
@@ -109,7 +194,6 @@ No GPU or insufficient VRAM  →  n_gpu_layers = 0 (CPU only)
 └── reports/
     ├── 00_LEADERBOARD.md    # Ranked summary of all models
     ├── rank01_model_name.md # Detailed report for #1 model
-    ├── rank02_model_name.md # Detailed report for #2 model
     └── ...
 
 ./
@@ -118,41 +202,35 @@ No GPU or insufficient VRAM  →  n_gpu_layers = 0 (CPU only)
 └── LLM_BENCHMARK_LEADERBOARD.md         # Leaderboard (Markdown)
 ```
 
-### Per-Model Report Contents
+## Question Database Management
 
-Each model report includes:
-- Identity: filename, quantization, params, HuggingFace URL, downloads, likes
-- Hardware: GPU layers used, CPU threads, context size, inference mode
-- Performance: overall score, grade, speed (tokens/sec)
-- Category breakdown: score per category with bar chart
-- Strengths and weaknesses (top/bottom 3 categories)
-- Use-case recommendations
-- Question-by-question results with prompts, responses, and timing
+Questions are stored in `questions_db.json` and managed via `questions.py`:
 
-## Disk Space Management
+```bash
+python3 questions.py --validate     # check database consistency
+python3 questions.py --stats        # show category/difficulty distribution
+python3 questions.py --reindex      # rebuild ChromaDB index
+python3 questions.py --search "thermodynamics"  # semantic search
+python3 questions.py --template PHYSICS  # generate monthly update template
+```
 
-The benchmark is disk-space aware. When space is low, it cleans (in order):
+### Monthly Update Workflow
+1. Edit `questions_db.json` (add/modify/remove questions)
+2. Run `python3 questions.py --validate` to check consistency
+3. Run `python3 questions.py --reindex` to rebuild the search index
+4. Run `python3 questions.py --stats` to verify distribution
 
-1. **HuggingFace cache blobs** (re-downloadable)
-2. **Old benchmark reports** (>30 days)
-3. **Python `__pycache__`** directories
-4. **Oversized models** that exceed hardware limits (asks permission)
+## Grading Scale
 
-It **never** deletes: models currently being tested, user files, system files.
-
-## Curated Model Catalog
-
-The benchmark ships with a curated list of 24 models spanning all size ranges:
-
-| Size Class | Models | RAM Needed |
-|-----------|--------|-----------|
-| Tiny (<1B) | Qwen3-0.6B, SmolLM2-360M | 0.3-0.5 GB |
-| Small (1-3B) | Llama-3.2-1B, Qwen3-1.7B, Llama-3.2-3B, Phi-3-mini | 0.8-2.5 GB |
-| Medium (4-9B) | Qwen3-4B, Qwen2.5-7B, Mistral-7B, Llama-3.1-8B, Gemma-2-9B | 2.9-6.1 GB |
-| Large (10-16B) | Mistral-Nemo-12B, Phi-4-14B, Qwen2.5-14B | 7.7-9.4 GB |
-| XL (24-70B) | Qwen2.5-32B, Llama-3.3-70B | 21.5-46 GB |
-
-Models are automatically filtered by hardware — only what fits gets downloaded and tested.
+| Grade | Score | Meaning |
+|-------|-------|---------|
+| A+ | >=90% | Excellent — production ready |
+| A | >=80% | Very good — reliable for most tasks |
+| B+ | >=70% | Good — solid general performance |
+| B | >=60% | Decent — acceptable for simple tasks |
+| C | >=50% | Fair — limited capability |
+| D | >=40% | Poor — struggles with most tasks |
+| F | <40% | Failing — not recommended |
 
 ## Requirements
 
@@ -171,25 +249,14 @@ psutil              # Optional — process memory tracking
 chromadb            # Optional — persistent vector store
 huggingface-hub     # Optional — model auto-download
 requests            # Optional — network operations
+transformers        # Optional — safetensors/bin model support
+torch               # Optional — needed with transformers
 ```
-
-## Grading Scale
-
-| Grade | Score | Meaning |
-|-------|-------|---------|
-| A+ | ≥90% | Excellent — production ready |
-| A | ≥80% | Very good — reliable for most tasks |
-| B+ | ≥70% | Good — solid general performance |
-| B | ≥60% | Decent — acceptable for simple tasks |
-| C | ≥50% | Fair — limited capability |
-| D | ≥40% | Poor — struggles with most tasks |
-| F | <40% | Failing — not recommended |
 
 ## Contributing
 
 Contributions welcome! Areas of interest:
-- New benchmark questions (especially domain-specific)
-- Support for additional model formats (ONNX, TensorRT)
+- New benchmark questions (any domain)
 - macOS/Windows support
 - Multi-GPU benchmarking
 - Automated regression testing between model versions
@@ -200,4 +267,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Murat A. Genç
+Murat A. Genc
