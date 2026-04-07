@@ -381,7 +381,11 @@ def probe_hardware() -> HardwareProfile:
         hp.use_gpu = False
 
     # CPU/RAM limit: 70% of available RAM
-    hp.max_model_gb_cpu = round(hp.ram_available_gb * 0.70, 2)
+    # CPU/RAM limit: use available RAM + swap for model loading
+    # llama.cpp uses mmap so models can exceed physical RAM (pages in from disk)
+    # Conservative: 85% of (available RAM + swap), minimum 2GB for tiny models
+    usable_ram = hp.ram_available_gb + hp.swap_total_gb * 0.5  # swap is slower, count half
+    hp.max_model_gb_cpu = max(2.0, round(usable_ram * 0.85, 2))
 
     # Effective limit: if GPU, prefer GPU limit; also allow CPU as fallback
     hp.max_model_gb = max(hp.max_model_gb_gpu, hp.max_model_gb_cpu)
@@ -964,15 +968,34 @@ class ModelManager:
         return len(list(self._dir.rglob("*.gguf")))
 
     def maybe_download(self):
-        n = self.count()
+        # Count only actual LLM models (not mmproj/clip files)
+        skip = ["mmproj", "clip-", "vision-encoder", "projector"]
+        actual = [f for f in self._dir.rglob("*.gguf")
+                  if not any(s in f.name.lower() for s in skip)]
+        n = len(actual)
+
         if n >= self._min:
-            pr(f"[dim]Models found: {n} ≥ {self._min} — no download needed[/dim]"); return
+            pr(f"[dim]LLM models found: {n} ≥ {self._min} — no download needed[/dim]"); return
         if self._offline:
-            pr(f"[yellow]Only {n} models, but --offline — skipping download[/yellow]"); return
-        pr(f"\n[bold yellow]Only {n} models found (threshold: {self._min}).[/bold yellow]")
-        pr(f"[dim]Hardware limits: GPU={self._hp.max_model_gb_gpu:.1f}GB  "
-           f"CPU={self._hp.max_model_gb_cpu:.1f}GB  Max={self._hp.max_model_gb:.1f}GB[/dim]")
-        self._download(self._min - n)
+            pr(f"[yellow]Only {n} LLM models, but --offline — skipping download[/yellow]"); return
+
+        # Figure out what size ranges we're missing for a diverse benchmark
+        sizes = [f.stat().st_size / 1e9 for f in actual]
+        has_tiny  = any(s < 1 for s in sizes)    # <1GB
+        has_small = any(1 <= s < 3 for s in sizes) # 1-3GB
+        has_med   = any(3 <= s < 6 for s in sizes) # 3-6GB
+        has_large = any(s >= 6 for s in sizes)     # 6GB+
+        missing_ranges = []
+        if not has_tiny:  missing_ranges.append("tiny (<1GB)")
+        if not has_small: missing_ranges.append("small (1-3GB)")
+        if not has_med:   missing_ranges.append("medium (3-6GB)")
+        if not has_large and self._hp.max_model_gb >= 6: missing_ranges.append("large (6GB+)")
+
+        needed = self._min - n
+        pr(f"\n[bold yellow]{n} LLM models found (want {self._min} for comprehensive benchmark)[/bold yellow]")
+        pr(f"[dim]Hardware limit: {self._hp.max_model_gb:.1f}GB  |  "
+           f"Missing ranges: {', '.join(missing_ranges) if missing_ranges else 'none'}[/dim]")
+        self._download(needed)
 
     def _candidates(self) -> List[dict]:
         """Build prioritized candidate list respecting hardware limits."""
@@ -1083,11 +1106,22 @@ class ModelManager:
 
     def discover_local(self, model_filter=None) -> List[dict]:
         models = []
+        # File patterns that are NOT standalone LLMs (skip these)
+        SKIP_PATTERNS = ["mmproj", "clip-", "vision-encoder", "image-encoder",
+                         "projector", "embed_tokens"]
+
         for path in sorted(self._dir.rglob("*.gguf")):
             if model_filter and model_filter.lower() not in path.name.lower(): continue
+
+            # Skip multimodal projection files — they're not standalone LLMs
+            name_lower = path.name.lower()
+            if any(skip in name_lower for skip in SKIP_PATTERNS):
+                pr(f"[dim]Skip {path.name} (multimodal projection file, not a standalone LLM)[/dim]")
+                continue
+
             size_gb = path.stat().st_size / 1e9
-            # Skip models too large for hardware
-            if size_gb > self._hp.max_model_gb * 1.05:
+            # Skip models too large for hardware (with generous tolerance for mmap)
+            if size_gb > self._hp.max_model_gb * 1.2:
                 pr(f"[dim]Skip {path.name} ({size_gb:.1f}GB > {self._hp.max_model_gb:.1f}GB limit)[/dim]")
                 continue
             name = path.stem.upper()
@@ -1566,7 +1600,7 @@ def parse_args():
     p.add_argument("--offline",     action="store_true", help="No network calls")
     p.add_argument("--threads",     type=int, default=None, help="CPU threads (default: auto)")
     p.add_argument("--ctx",         type=int, default=4096)
-    p.add_argument("--min-models",  type=int, default=20)
+    p.add_argument("--min-models",  type=int, default=10)
     p.add_argument("--model-filter",type=str, default=None)
     p.add_argument("--output",      type=str, default="llm_benchmark")
     p.add_argument("--categories",  nargs="+", choices=list(QUESTIONS.keys()))
